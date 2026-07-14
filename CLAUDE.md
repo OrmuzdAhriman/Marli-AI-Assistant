@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Start here
+
+- Open tasks: `docs/TASKS.md` (read first every session). Running log: `docs/JOURNAL.md`.
+- Full project handbook: `docs/HANDBOOK.en.md` / `docs/HANDBOOK.bs.md` (keep both in sync — see the `marli-docs` skill).
+- Git work goes through the `marli` CLI (`scripts/marli`) — see the `marli-git-workflow` skill. `main` is production; PRs only.
+
 ## What this is
 
 A local, offline voice assistant ("Marley") that runs entirely on-device via a Linux host. There is no cloud API — every stage is a local process/binary. Despite the repo being checked out on Windows, the code targets Linux (ALSA audio, `/home/aprasovic/...` paths) and must be run there (e.g. a Raspberry Pi / Linux box).
