@@ -5,6 +5,14 @@ Tekući dnevnik: šta smo radili i na čemu radimo. Najnovije prvo.
 
 ---
 
+## 2026-07-14 (later) — PR chain merged
+
+**EN:** Merged the whole bootstrap chain into `main`: #1 (git workflow) → #4 (OLED face; replaces #2, which GitHub auto-closed when its base branch was deleted) → #3 (docs & growth). Main is now 3 squash commits on top of the initial code. Lesson learned for stacked PRs + squash merges: after merging the bottom PR, **rebase the next branch onto main and force-push** before merging it — otherwise GitHub reports merge conflicts and may close PRs whose base branch disappeared. Local + remote work branches cleaned up.
+
+**BS:** Cijeli lanac PR-ova spojen u `main` (#1 → #4 → #3; #2 je GitHub zatvorio kad mu je obrisana bazna grana — ponovo otvoren kao #4). Pouka za naslagane PR-ove uz squash: nakon spajanja donjeg PR-a, **rebase sljedeće grane na main + force-push** prije spajanja. Radne grane počišćene.
+
+---
+
 ## 2026-07-14 — Bootstrap day (Senad + Claude)
 
 **EN:** Set up everything from zero on Senad's Pi 5 (`sosmic-pi`):
