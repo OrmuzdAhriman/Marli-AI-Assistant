@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# marli — friendly git workflow for the Marli-AI-Assistant repo.
+# Flow: start -> save -> pr -> (review) -> ship.   Run `marli help`.
+set -uo pipefail
+
+# --- styling (degrade gracefully with no TTY) ---
+if [ -t 1 ]; then
+  BOLD=$(tput bold); DIM=$(tput dim); RST=$(tput sgr0)
+  RED=$(tput setaf 1); GRN=$(tput setaf 2); YLW=$(tput setaf 3); BLU=$(tput setaf 4)
+else
+  BOLD=""; DIM=""; RST=""; RED=""; GRN=""; YLW=""; BLU=""
+fi
+say()  { printf '%s %s\n' "${BLU}▸${RST}" "$*"; }
+ok()   { printf '%s %s\n' "${GRN}✓${RST}" "$*"; }
+warn() { printf '%s %s\n' "${YLW}!${RST}" "$*"; }
+die()  { printf '%s %s\n' "${RED}✗${RST}" "$*" >&2; exit 1; }
+next() { printf '%snext:%s %s%s%s\n' "$DIM" "$RST" "$BOLD" "$*" "$RST"; }
+
+in_repo() { git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "Not inside a git repo. cd into the project first."; }
+current_branch() { git rev-parse --abbrev-ref HEAD; }
+clean_tree() { [ -z "$(git status --porcelain)" ]; }
+require_gh() { command -v gh >/dev/null 2>&1 || die "GitHub CLI 'gh' not found. Run: marli doctor"; }
+require_not_main() { [ "$(current_branch)" != "main" ] || die "You're on main (production). Start a branch first:  marli start <topic>"; }
+
+handle() {
+  local h
+  h=$(gh api user --jq .login 2>/dev/null || true)
+  [ -n "$h" ] || h=$(git config user.name 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+  [ -n "$h" ] || h=${USER:-dev}
+  printf '%s' "$h"
+}
+
+cmd_start() {
+  in_repo
+  local topic=${1:-}
+  [ -n "$topic" ] || die "Give a topic:  marli start <topic>   (e.g. marli start wakeword)"
+  clean_tree || die "You have uncommitted changes. Save them first:  marli save   (or 'git stash')"
+  say "Updating main…"
+  git switch main >/dev/null 2>&1 || git checkout main
+  git pull --ff-only origin main || die "Could not update main. Check your connection / 'gh auth login'."
+  local branch; branch="$(handle)/${topic}"
+  git switch -c "$branch" || die "Branch '$branch' may already exist. Try: git switch $branch"
+  ok "On new branch ${BOLD}${branch}${RST}"
+  next "make changes, then  marli save \"what you did\""
+}
+
+cmd_save() {
+  in_repo; require_not_main
+  local msg=${1:-}
+  git add -A
+  if git diff --cached --quiet; then
+    warn "Nothing new to commit."
+  else
+    if [ -z "$msg" ]; then
+      printf '%sCommit message:%s ' "$BOLD" "$RST"; read -r msg
+      [ -n "$msg" ] || die "Empty message — nothing committed."
+    fi
+    git commit -q -m "$msg" || die "Commit failed."
+    ok "Committed: $msg"
+  fi
+  say "Pushing…"
+  git push -u origin "$(current_branch)" || die "Push failed. Are you logged in?  gh auth login"
+  ok "Pushed ${BOLD}$(current_branch)${RST}"
+  next "open a pull request:  marli pr"
+}
+
+cmd_pr() {
+  in_repo; require_gh; require_not_main
+  local branch; branch="$(current_branch)"
+  git push -u origin "$branch" >/dev/null 2>&1 || true
+  local url
+  url=$(gh pr view "$branch" --json url --jq .url 2>/dev/null || true)
+  if [ -n "$url" ]; then
+    ok "PR already open: $url"
+  else
+    local title=${1:-}
+    if [ -n "$title" ]; then
+      gh pr create --base main --head "$branch" --title "$title" --fill || die "Could not create PR."
+    else
+      gh pr create --base main --head "$branch" --fill || die "Could not create PR."
+    fi
+    url=$(gh pr view "$branch" --json url --jq .url 2>/dev/null || true)
+    ok "PR opened: $url"
+  fi
+  next "get a teammate to review, then  marli ship"
+}
+
+cmd_sync() {
+  in_repo
+  local prev; prev="$(current_branch)"
+  say "Updating main…"
+  git switch main >/dev/null 2>&1 || git checkout main
+  git pull --ff-only origin main || die "Could not update main."
+  ok "main is up to date."
+  if [ "$prev" != "main" ]; then
+    printf '%sBring latest main into ' "$BOLD"; printf "'%s'? [y/N]%s " "$prev" "$RST"; read -r ans
+    git switch "$prev" >/dev/null 2>&1 || return 0
+    if [ "${ans:-}" = "y" ] || [ "${ans:-}" = "Y" ]; then
+      git merge main && ok "Merged latest main into ${prev}." || warn "Merge hit conflicts — resolve, then 'marli save'."
+    fi
+  fi
+}
+
+cmd_ship() {
+  in_repo; require_gh; require_not_main
+  local branch; branch="$(current_branch)"
+  say "Merging PR for ${branch}…"
+  if gh pr merge "$branch" --squash --delete-branch; then
+    git switch main >/dev/null 2>&1 || git checkout main
+    git pull --ff-only origin main
+    git branch -d "$branch" 2>/dev/null || true
+    ok "Shipped ${BOLD}${branch}${RST} to main and cleaned up."
+    next "start your next task:  marli start <topic>"
+  else
+    local url; url=$(gh pr view "$branch" --json url --jq .url 2>/dev/null || true)
+    die "Couldn't merge yet — main needs an approving review. Ask a teammate: ${url}"
+  fi
+}
+
+cmd_status() {
+  in_repo
+  local branch; branch="$(current_branch)"
+  printf '%sBranch:%s %s\n' "$BOLD" "$RST" "$branch"
+  if clean_tree; then ok "Working tree clean"; else warn "Uncommitted changes:"; git status -s; fi
+  git fetch -q origin 2>/dev/null || true
+  if git rev-parse --verify -q origin/main >/dev/null; then
+    local counts behind ahead
+    counts=$(git rev-list --left-right --count origin/main...HEAD 2>/dev/null || printf '0\t0')
+    behind=$(printf '%s' "$counts" | cut -f1); ahead=$(printf '%s' "$counts" | cut -f2)
+    printf '%sSync:%s %s ahead, %s behind origin/main\n' "$BOLD" "$RST" "${ahead:-0}" "${behind:-0}"
+  fi
+  if command -v gh >/dev/null 2>&1 && [ "$branch" != "main" ]; then
+    local pr; pr=$(gh pr view "$branch" --json state,url --jq '.state+"  "+.url' 2>/dev/null || true)
+    if [ -n "$pr" ]; then printf '%sPR:%s %s\n' "$BOLD" "$RST" "$pr"; else printf '%sPR:%s none yet (marli pr)\n' "$BOLD" "$RST"; fi
+  fi
+}
+
+install_gh() {
+  command -v apt-get >/dev/null 2>&1 || die "No apt-get here. Install gh manually: https://github.com/cli/cli#installation"
+  say "Installing GitHub CLI via official apt repo…"
+  sudo mkdir -p -m 755 /etc/apt/keyrings
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
+  sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+  sudo apt-get update -qq && sudo apt-get install -y gh && ok "gh installed." || die "gh install failed."
+}
+
+cmd_doctor() {
+  in_repo
+  say "Checking your setup…"
+  if command -v gh >/dev/null 2>&1; then
+    ok "gh installed ($(gh --version | head -1))"
+  else
+    warn "GitHub CLI 'gh' not installed."
+    printf '%sInstall it now with apt? [y/N]%s ' "$BOLD" "$RST"; read -r ans
+    { [ "${ans:-}" = "y" ] || [ "${ans:-}" = "Y" ]; } && install_gh || warn "Skipped. Re-run 'marli doctor' later."
+  fi
+  if command -v gh >/dev/null 2>&1; then
+    if gh auth status >/dev/null 2>&1; then ok "gh authenticated"; else warn "Not logged in. Run:  ${BOLD}gh auth login${RST}  (choose HTTPS)"; fi
+  fi
+  if [ -n "$(git config user.name || true)" ] && [ -n "$(git config user.email || true)" ]; then
+    ok "git identity: $(git config user.name) <$(git config user.email)>"
+  else
+    warn "git identity not set."
+    printf '  Your name:  '; read -r n; printf '  Your email: '; read -r e
+    git config --global user.name "$n"; git config --global user.email "$e"; ok "Saved git identity."
+  fi
+  git remote get-url origin >/dev/null 2>&1 && ok "remote origin: $(git remote get-url origin)" || warn "No 'origin' remote set."
+  local self target="$HOME/.local/bin/marli"
+  self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  if [ ! -e "$target" ]; then
+    printf "%sAdd 'marli' to your PATH (~/.local/bin)? [y/N]%s " "$BOLD" "$RST"; read -r ans
+    if [ "${ans:-}" = "y" ] || [ "${ans:-}" = "Y" ]; then
+      mkdir -p "$HOME/.local/bin"; ln -sf "$self" "$target"
+      case ":$PATH:" in *":$HOME/.local/bin:"*) : ;; *) warn "Add ~/.local/bin to PATH in ~/.bashrc to use 'marli' directly." ;; esac
+      ok "Linked marli -> $target"
+    fi
+  fi
+}
+
+cmd_help() {
+  cat <<EOF
+${BOLD}marli${RST} — friendly git for this repo.   Flow: ${BOLD}start → save → pr → ship${RST}
+
+  ${BOLD}marli start${RST} <topic>   Start fresh work: update main, make your branch
+  ${BOLD}marli save${RST} [msg]      Save your work: commit everything + push
+  ${BOLD}marli pr${RST} [title]      Open a pull request into main
+  ${BOLD}marli sync${RST}            Pull the latest main (optionally into your branch)
+  ${BOLD}marli ship${RST}            Merge your approved PR and clean up
+  ${BOLD}marli status${RST}          Where am I? branch, changes, PR
+  ${BOLD}marli doctor${RST}          One-time setup check (gh, login, identity, PATH)
+  ${BOLD}marli help${RST}            This help
+
+Branches are <you>/<topic>. main is production — only reviewed PRs land there.
+EOF
+}
+
+cmd=${1:-help}; shift 2>/dev/null || true
+case "$cmd" in
+  start)  cmd_start "$@";;
+  save)   cmd_save "$@";;
+  pr)     cmd_pr "$@";;
+  sync)   cmd_sync "$@";;
+  ship)   cmd_ship "$@";;
+  status) cmd_status "$@";;
+  doctor) cmd_doctor "$@";;
+  help|-h|--help) cmd_help;;
+  *) warn "Unknown command: $cmd"; cmd_help; exit 1;;
+esac

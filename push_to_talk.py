@@ -1,14 +1,27 @@
+import os
 import subprocess
+from pathlib import Path
+
 import requests
 
-WHISPER = "/home/aprasovic/whisper.cpp/build/bin/whisper-cli"
-MODEL = "/home/aprasovic/whisper.cpp/models/ggml-base.en.bin"
+HOME = str(Path.home())
+
+# Binaries / models — per-machine layout; override via env if yours differs.
+WHISPER = os.environ.get("MARLEY_WHISPER", f"{HOME}/whisper.cpp/build/bin/whisper-cli")
+MODEL = os.environ.get("MARLEY_WHISPER_MODEL", f"{HOME}/whisper.cpp/models/ggml-base.en.bin")
+PIPER = os.environ.get("MARLEY_PIPER", f"{HOME}/piper/piper")
+PIPER_MODEL = os.environ.get("MARLEY_PIPER_MODEL", f"{HOME}/piper/en_US-lessac-medium.onnx")
+
+# Audio (ALSA). Find yours with `arecord -L` / `aplay -L`.
+MIC = os.environ.get("MARLEY_MIC", "plughw:CARD=Headset,DEV=0")
+SPEAKER = os.environ.get("MARLEY_SPEAKER", "plughw:CARD=Headset,DEV=0")
+
+# Ollama
+OLLAMA_MODEL = os.environ.get("MARLEY_MODEL", "qwen2.5:0.5b")
+OLLAMA_URL = os.environ.get("MARLEY_OLLAMA_URL", "http://localhost:11434/api/generate")
 
 AUDIO = "input.wav"
 OUT = "output.wav"
-
-PIPER = "/home/aprasovic/ai-assistant/venv/bin/piper"
-PIPER_MODEL = "/home/aprasovic/piper/en_US-lessac-medium.onnx"
 
 
 def record():
@@ -16,7 +29,7 @@ def record():
 
     subprocess.run([
         "arecord",
-        "-D", "plughw:CARD=Device,DEV=0",
+        "-D", MIC,
         "-f", "S16_LE",
         "-r", "16000",
         "-c", "1",
@@ -39,9 +52,9 @@ def whisper():
 
 def ollama(prompt):
     r = requests.post(
-        "http://localhost:11434/api/generate",
+        OLLAMA_URL,
         json={
-            "model": "qwen2.5:0.5b",
+            "model": OLLAMA_MODEL,
             "prompt": prompt,
             "stream": False
         }
@@ -54,10 +67,10 @@ def ollama(prompt):
 
 def tts(text):
     subprocess.run(
-        f'echo "{text}" | {PIPER} --model {PIPER_MODEL} --output_file {OUT}',
-        shell=True
+        [PIPER, "--model", PIPER_MODEL, "--output_file", OUT],
+        input=text.encode()
     )
-    subprocess.run(["aplay", OUT])
+    subprocess.run(["aplay", "-D", SPEAKER, OUT])
 
 
 def main():
