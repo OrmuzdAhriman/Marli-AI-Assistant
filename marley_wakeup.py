@@ -4,6 +4,8 @@ from pathlib import Path
 
 import requests
 
+from face import Face
+
 HOME = str(Path.home())
 
 # Binaries / models — per-machine layout; override via env if yours differs.
@@ -68,18 +70,25 @@ def tts(text):
 
 def main():
     print("\n🔵 MARLEY WAKE MODE\n")
+    face = Face()
+    face.start()
+    try:
+        while True:
+            face.set_state("listening")
+            record()
 
-    while True:
-        record()
+            face.set_state("thinking")
+            text = whisper()
+            print("🧠 HEARD:", text)
 
-        text = whisper()
-        print("🧠 HEARD:", text)
-
-        if "marley wake up" in text:
-            print("🔥 ACTIVATED")
-
-            answer = ollama(text)
-            tts(answer)
+            if "marley wake up" in text:
+                print("🔥 ACTIVATED")
+                answer = ollama(text)
+                face.set_state("speaking")
+                tts(answer)
+            face.set_state("idle")
+    finally:
+        face.stop()
 
 
 if __name__ == "__main__":
