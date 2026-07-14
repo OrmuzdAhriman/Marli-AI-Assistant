@@ -4,6 +4,8 @@ from pathlib import Path
 
 import requests
 
+from face import Face
+
 HOME = str(Path.home())
 
 # Binaries / models — per-machine layout; override via env if yours differs.
@@ -75,19 +77,29 @@ def tts(text):
 
 def main():
     print("\n🟢 PUSH TO TALK MODE\n")
+    face = Face()
+    face.start()
+    try:
+        while True:
+            face.set_state("idle")
+            face.set_state("listening")   # record() waits for ENTER then captures 5s
+            record()
 
-    while True:
-        record()
+            face.set_state("thinking")
+            text = whisper()
+            if not text:
+                continue
 
-        text = whisper()
-        if not text:
-            continue
+            if "exit" in text.lower():
+                break
 
-        if "exit" in text.lower():
-            break
+            answer = ollama(text)
 
-        answer = ollama(text)
-        tts(answer)
+            face.set_state("speaking")
+            tts(answer)
+            face.set_state("idle")
+    finally:
+        face.stop()
 
 
 if __name__ == "__main__":
